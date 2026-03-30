@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>面談予約システム - 高校二者面談</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .slot-booked { background-color: #fee2e2; color: #991b1b; cursor: not-allowed; opacity: 0.5; border-color: #fecaca; }
+        .slot-available { background-color: #f0fdf4; color: #166534; cursor: pointer; transition: all 0.2s; border-color: #bbf7d0; }
+        .slot-available:hover { background-color: #dcfce7; transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .slot-selected { background-color: #16a34a !important; color: white !important; ring: 3px solid #15803d; border-color: #15803d !important; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .loading-spinner { border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.95); z-index: 100; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen font-sans text-slate-900">
+
+<div id="loading-overlay">
+    <div id="loading-content" class="text-center">
+        <div class="loading-spinner mb-4"></div>
+        <p class="text-sm font-bold text-slate-600">予約状況を確認中...</p>
+    </div>
+    <div id="error-content" class="hidden text-center p-6">
+        <p class="text-red-500 font-bold mb-4">データの取得に失敗しました</p>
+        <button onclick="location.reload()" class="bg-blue-600 text-white px-6 py-2 rounded-xl text-sm font-bold">再試行</button>
+    </div>
+</div>
+
+<div id="app" class="max-w-md mx-auto p-4 sm:p-6 pb-24">
+    <header class="mb-8 text-center pt-4">
+        <h1 class="text-2xl font-bold text-slate-800">春期 二者面談予約</h1>
+        <p class="text-sm text-slate-500 mt-2">4/22(水) 〜 5/15(金)</p>
+    </header>
+
+    <section class="bg-white rounded-2xl shadow-sm p-6 mb-6 border border-slate-100">
+        <h2 class="text-lg font-semibold mb-4 text-slate-700">1. 生徒情報の入力</h2>
+        <div class="space-y-4">
+            <div>
+                <label class="block text-xs font-bold text-slate-400 mb-1">生徒氏名</label>
+                <input type="text" id="student-name" placeholder="例：高木 大介" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all">
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-slate-400 mb-1">メールアドレス</label>
+                <input type="email" id="parent-email" placeholder="確認メール送信先" class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 transition-all">
+            </div>
+        </div>
+    </section>
+
+    <section class="bg-white rounded-2xl shadow-sm p-6 mb-6 border border-slate-100">
+        <h2 class="text-lg font-semibold mb-4 text-slate-700">2. 希望日時の選択</h2>
+        <div class="mb-4 overflow-x-auto no-scrollbar">
+            <div class="flex gap-2 pb-2" id="day-selector"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-3" id="time-slots"></div>
+    </section>
+
+    <div class="sticky bottom-6">
+        <button id="btn-submit" disabled class="w-full py-4 bg-slate-300 text-white font-bold rounded-2xl shadow-xl transition-all active:scale-95">
+            <span id="btn-text">予約を確定する</span>
+        </button>
+    </div>
+
+    <div id="modal-success" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-[2rem] p-8 max-w-sm w-full text-center shadow-2xl">
+            <div class="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl font-bold">✓</div>
+            <h3 class="text-xl font-bold text-slate-800 mb-2">予約を承りました</h3>
+            <p id="confirm-details" class="text-slate-600 mb-6 text-sm bg-slate-50 p-4 rounded-xl whitespace-pre-wrap"></p>
+            <button onclick="location.reload()" class="w-full py-3 bg-slate-900 text-white rounded-xl font-bold">閉じる</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    /**
+     * 【重要】手順3でコピーしたウェブアプリのURLをここに貼り付けてください
+     */
+    const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyogGYlVaci6-bqS5whEysyhIt_gBIXU-NVfmuwFLSrriVs9MfvJBJd3uOOFlgLqoWtiA/exec"; 
+
+    const START_DATE = new Date(2026, 3, 22);
+    const END_DATE = new Date(2026, 4, 15);
+    const EXCLUDED_DATES = ['4/28', '4/29', '5/3', '5/4', '5/5', '5/6', '5/7', '5/8'];
+    
+    let scheduleData = [];
+    let selectedDayIndex = 0;
+    let selectedSlotId = null;
+    let isSubmitting = false;
+
+    function fetchReservationsJSONP() {
+        return new Promise((resolve, reject) => {
+            if (!GAS_WEB_APP_URL.startsWith("https://")) return reject("URL_NOT_SET");
+            const cb = 'cb_' + Date.now();
+            const script = document.createElement('script');
+            window[cb] = (data) => {
+                delete window[cb];
+                document.head.removeChild(script);
+                resolve(data);
+            };
+            script.src = `${GAS_WEB_APP_URL}?callback=${cb}&_=${Date.now()}`;
+            script.onerror = () => reject("LOAD_ERROR");
+            document.head.appendChild(script);
+            setTimeout(() => reject("TIMEOUT"), 10000);
+        });
+    }
+
+    async function init() {
+        try {
+            const bookedList = await fetchReservationsJSONP();
+            scheduleData = generateSchedule(bookedList);
+            renderDays();
+            renderSlots();
+            setupListeners();
+            document.getElementById('loading-overlay').style.display = 'none';
+        } catch (e) {
+            document.getElementById('loading-content').classList.add('hidden');
+            document.getElementById('error-content').classList.remove('hidden');
+        }
+    }
+
+    function generateSchedule(bookedList) {
+        const schedule = [];
+        const dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+        let slotId = 1;
+        let cur = new Date(START_DATE);
+        while (cur <= END_DATE) {
+            const dStr = `${cur.getMonth()+1}/${cur.getDate()}`;
+            const label = `${dStr}(${dayNames[cur.getDay()]})`;
+            if (cur.getDay() !== 0 && !EXCLUDED_DATES.includes(dStr)) {
+                let times = (cur.getDay() === 6) ? ['11:50', '12:05'] : ['12:45', '13:00', '15:30'];
+                schedule.push({
+                    date: label,
+                    slots: times.map(t => ({
+                        id: slotId++, time: t,
+                        booked: bookedList.some(b => b.date.includes(label) && b.time === t)
+                    }))
+                });
+            }
+            cur.setDate(cur.getDate() + 1);
+        }
+        return schedule;
+    }
+
+    function renderDays() {
+        const container = document.getElementById('day-selector');
+        container.innerHTML = scheduleData.map((d, i) => `
+            <button onclick="selectDay(${i})" class="px-4 py-2 rounded-xl whitespace-nowrap text-sm font-bold border ${selectedDayIndex === i ? 'bg-blue-600 text-white' : 'bg-white text-slate-500 border-slate-200'}">
+                ${d.date}
+            </button>
+        `).join('');
+    }
+
+    function renderSlots() {
+        const container = document.getElementById('time-slots');
+        const day = scheduleData[selectedDayIndex];
+        container.innerHTML = day.slots.map(s => `
+            <div onclick="${s.booked || isSubmitting ? '' : `selectSlot(${s.id})`}" 
+                 class="p-4 rounded-xl text-center font-bold border-2 ${s.booked ? 'slot-booked' : (selectedSlotId === s.id ? 'slot-selected' : 'slot-available')}">
+                ${s.time}<div class="text-[10px] mt-1">${s.booked ? '予約済み' : '選択可'}</div>
+            </div>
+        `).join('');
+        validate();
+    }
+
+    window.selectDay = (i) => { selectedDayIndex = i; selectedSlotId = null; renderDays(); renderSlots(); };
+    window.selectSlot = (id) => { selectedSlotId = id; renderSlots(); };
+
+    function validate() {
+        const ok = document.getElementById('student-name').value.trim() && 
+                   document.getElementById('parent-email').value.includes('@') && 
+                   selectedSlotId && !isSubmitting;
+        const btn = document.getElementById('btn-submit');
+        btn.disabled = !ok;
+        btn.className = `w-full py-4 font-bold rounded-2xl shadow-xl transition-all ${ok ? 'bg-blue-600 text-white' : 'bg-slate-300 text-white'}`;
+    }
+
+    function setupListeners() {
+        document.getElementById('student-name').addEventListener('input', validate);
+        document.getElementById('parent-email').addEventListener('input', validate);
+        document.getElementById('btn-submit').addEventListener('click', async () => {
+            if (isSubmitting) return;
+            isSubmitting = true;
+            document.getElementById('btn-text').innerText = "送信中...";
+            validate();
+            const day = scheduleData[selectedDayIndex];
+            const slot = day.slots.find(s => s.id === selectedSlotId);
+            try {
+                await fetch(GAS_WEB_APP_URL, {
+                    method: 'POST', mode: 'no-cors',
+                    body: JSON.stringify({
+                        action: 'add', studentName: document.getElementById('student-name').value,
+                        email: document.getElementById('parent-email').value,
+                        dateLabel: day.date, time: slot.time
+                    })
+                });
+                document.getElementById('confirm-details').innerText = `${document.getElementById('student-name').value} 様\n\n【予約日時】\n${day.date} ${slot.time}〜\n\n確認メールを送信しました。`;
+                document.getElementById('modal-success').classList.remove('hidden');
+            } catch (e) {
+                alert("送信エラー。再試行してください。");
+                isSubmitting = false;
+                document.getElementById('btn-text').innerText = "予約を確定する";
+                validate();
+            }
+        });
+    }
+    init();
+</script>
+</body>
+</html>
